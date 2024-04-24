@@ -465,16 +465,30 @@ pub fn call(error: CallError) -> Error {
 pub fn vm(error: &VMError, output: &[u8]) -> Error {
     use rustc_hex::ToHex;
 
-    let data = match error {
-        &VMError::Reverted => format!("{} 0x{}", VMError::Reverted, output.to_hex()),
-        error => format!("{}", error),
-    };
+    if let &VMError::Reverted = error {
+		let output_hex = format!("0x{}", output.to_hex());
 
-    Error {
-        code: ErrorCode::ServerError(codes::EXECUTION_ERROR),
-        message: "VM execution error.".into(),
-        data: Some(Value::String(data)),
-    }
+		// if output starts with 0x08c379a0, it's a revert error
+		// first 68 bytes are the prefix of the abi encoded error message, skip them
+		let message = match output.len() >= 68 && output_hex.starts_with("0x08c379a0") {
+			true => format!("execution reverted: {}", String::from_utf8((&output[68..]).to_vec())
+				.expect(&output_hex.to_string())
+				.trim_matches(char::from(0))
+				),
+			false => "execution reverted".to_string(),
+		};
+		Error {
+			code: ErrorCode::ServerError(codes::EXECUTION_ERROR),
+			message,
+			data: Some(Value::String(output_hex)),
+		}
+	} else {
+		Error {
+			code: ErrorCode::ServerError(codes::EXECUTION_ERROR),
+			message: "VM execution error.".into(),
+			data: Some(Value::String(format!("{}", error))),
+		}
+	}
 }
 
 pub fn unknown_block() -> Error {
