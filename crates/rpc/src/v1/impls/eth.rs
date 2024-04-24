@@ -1443,7 +1443,7 @@ where
         let signed = try_bf!(fake_sign::sign_call(request));
         let num = num.unwrap_or_default();
 
-        let (state, header) = if num == BlockNumber::Pending {
+        let (mut state, header) = if num == BlockNumber::Pending {
             self.pending_state_and_header_with_fallback()
         } else {
             let id = match num {
@@ -1465,11 +1465,27 @@ where
             (state, header)
         };
 
-        Box::new(future::done(
-            self.client
-                .estimate_gas(&signed, &state, &header)
-                .map_err(errors::call),
-        ))
+		let estimate_gas_result = self.client.estimate_gas(&signed, &state, &header);
+
+		// return gas if no errors
+		// if any error occurred:
+		//   do self.client.call() - it will return vm error *with reverted string*
+		//	 if self.client.call() doesn't return an error (which is weird) - return the original error from estimate_gas
+		Box::new(future::done(
+			match estimate_gas_result {
+				Ok(gas) => Ok(gas),
+				Err(estimate_gas_error) => {
+					let call_result = self.client.call(&signed, Default::default(), &mut state, &header);
+					call_result
+						.map_err(errors::call)
+						.and_then(|executed| match executed.exception {
+							Some(ref exception) => Err(errors::vm(exception, &executed.output)),
+							None => Err(errors::call(estimate_gas_error)),
+						})
+
+				}
+			}
+		))
     }
 
     fn compile_lll(&self, _: String) -> Result<Bytes> {
